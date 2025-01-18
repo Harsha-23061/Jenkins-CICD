@@ -8,25 +8,49 @@ nginx_conf_path="/random/nginx/location/nginx.conf"
 # Path to your config.txt file
 config_file_path="/home/user/myconfigs/config.txt"
 
+# Validate file paths
+if [ ! -f "$nginx_conf_path" ]; then
+    echo "Error: nginx.conf not found at $nginx_conf_path."
+    exit 1
+fi
+
+if [ ! -f "$config_file_path" ]; then
+    echo "Error: config.txt not found at $config_file_path."
+    exit 1
+fi
+
 # Backup the original nginx.conf file
-cp "$nginx_conf_path" "$nginx_conf_path.bak"
+if [ -f "$nginx_conf_path.bak" ]; then
+    echo "Backup file $nginx_conf_path.bak already exists. Skipping backup."
+else
+    cp "$nginx_conf_path" "$nginx_conf_path.bak"
+fi
 
 # Pull the latest changes from the Git repository
 echo "Pulling latest changes from Git..."
-cd /code/myrepo
+cd /code/myrepo || { echo "Failed to cd to /code/myrepo. Exiting."; exit 1; }
+
 if [[ $(git status --porcelain) ]]; then
     echo "Unstaged changes detected. Stashing changes..."
     git stash
 fi
-git pull origin main
+
+git pull origin main || { echo "Failed to pull from Git. Exiting."; exit 1; }
 
 # Initialize changes_made flag
 changes_made=false
 
 # Read config.txt and update nginx.conf
 while IFS=, read -r repo subdomain port; do
-    subdomain=$(echo "$subdomain" | cut -d ' ' -f 3 | sed 's/;//')
-    port=$(echo "$port" | cut -d ' ' -f 3 | sed 's/;//')
+    # Sanitize inputs
+    subdomain=$(echo "$subdomain" | tr -cd '[:alnum:]-_.')
+    port=$(echo "$port" | tr -cd '[:digit:]')
+
+    # Validate port
+    if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+        echo "Invalid port: $port. Skipping."
+        continue
+    fi
 
     if grep -q "server_name $subdomain;" "$nginx_conf_path" && grep -q "proxy_pass http://localhost:$port;" "$nginx_conf_path"; then
         echo "Configuration for server_name $subdomain and proxy_pass http://localhost:$port already exists. Skipping..."
@@ -60,19 +84,20 @@ done < "$config_file_path"
 
 # Ensure script has execution permissions and deploy Docker containers
 echo "Setting execution permissions for docker_run.sh..."
-chmod +x /scripts/docker_run.sh
+chmod 755 /scripts/docker_run.sh
+
 echo "Deploying Docker containers..."
-/scripts/docker_run.sh
+/scripts/docker_run.sh || { echo "Failed to deploy Docker containers. Exiting."; exit 1; }
 
 echo "Script execution completed successfully."
 
 # If changes were made, commit and push the changes
 if $changes_made; then
     echo "Changes detected. Committing and pushing changes to Git..."
-    cd /code/myrepo
-    git add .
-    git commit -m "Updated nginx.conf with new proxy configurations"
-    git push origin main  # Replace with the appropriate branch if necessary
+    cd /code/myrepo || { echo "Failed to cd to /code/myrepo. Exiting."; exit 1; }
+    git add . || { echo "Failed to add changes to Git. Exiting."; exit 1; }
+    git commit -m "Updated nginx.conf with new proxy configurations" || { echo "Failed to commit changes. Exiting."; exit 1; }
+    git push origin main || { echo "Failed to push changes. Exiting."; exit 1; }  # Replace with the appropriate branch if necessary
     echo "Changes pushed successfully."
 else
     echo "No changes detected. Skipping commit and push."
